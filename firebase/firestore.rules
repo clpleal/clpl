@@ -1,0 +1,116 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function hasRole(role) {
+      return isSignedIn()
+        && userDoc(request.auth.uid).data.roles is list
+        && role in userDoc(request.auth.uid).data.roles;
+    }
+
+    function isPositiveNumber(value) {
+      return value is int || value is float
+        ? value >= 0
+        : false;
+    }
+
+    function validUrgency(value) {
+      return value in [1, 2, 3];
+    }
+
+    function isValidRequestStatus(status) {
+      return status in ['published', 'in_progress', 'completed', 'expired', 'cancelled'];
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSelf(userId)
+        && request.resource.data.phoneNumber is string
+        && request.resource.data.roles is list
+        && request.resource.data.displayName is string;
+      allow update: if isSelf(userId)
+        && request.resource.data.phoneNumber == resource.data.phoneNumber;
+      allow delete: if false;
+    }
+
+    match /requests/{requestId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.clientId == request.auth.uid
+        && request.resource.data.serviceType is string
+        && request.resource.data.description is string
+        && request.resource.data.photoUrls is list
+        && validUrgency(request.resource.data.urgencyLevel)
+        && isPositiveNumber(request.resource.data.suggestedPrice)
+        && request.resource.data.complexityLevel in [1, 2, 3, 4, 5]
+        && isValidRequestStatus(request.resource.data.status)
+        && request.resource.data.status == 'published';
+
+      allow update: if isSignedIn() && (
+          resource.data.clientId == request.auth.uid ||
+          resource.data.acceptedProviderId == request.auth.uid
+        )
+        && isValidRequestStatus(request.resource.data.status)
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.serviceType == resource.data.serviceType;
+
+      allow delete: if false;
+
+      match /offers/{offerId} {
+        allow read: if isSignedIn()
+          && (
+            get(/databases/$(database)/documents/requests/$(requestId)).data.clientId == request.auth.uid
+            || resource.data.providerId == request.auth.uid
+          );
+
+        allow create: if hasRole('provider')
+          && request.resource.data.providerId == request.auth.uid
+          && get(/databases/$(database)/documents/requests/$(requestId)).data.status == 'published'
+          && isPositiveNumber(request.resource.data.priceOffered)
+          && request.resource.data.status == 'pending';
+
+        allow update: if isSignedIn() && (
+            resource.data.providerId == request.auth.uid
+            || get(/databases/$(database)/documents/requests/$(requestId)).data.clientId == request.auth.uid
+          );
+
+        allow delete: if false;
+      }
+    }
+
+    match /ratings/{ratingId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.raterId == request.auth.uid
+        && request.resource.data.score in [1, 2, 3, 4, 5]
+        && request.resource.data.requestId is string
+        && request.resource.data.rateeId is string;
+      allow update, delete: if false;
+    }
+
+    match /disputes/{disputeId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.openedBy == request.auth.uid
+        && request.resource.data.requestId is string
+        && request.resource.data.reason is string
+        && request.resource.data.evidenceUrls is list
+        && request.resource.data.status == 'open';
+      allow update: if isSignedIn()
+        && (resource.data.openedBy == request.auth.uid || hasRole('admin'));
+      allow delete: if false;
+    }
+  }
+}
